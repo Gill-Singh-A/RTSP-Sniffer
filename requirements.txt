@@ -1,0 +1,4 @@
+scapy>=2.5
+av>=11
+opencv-python>=4.8
+numpy>=1.24
