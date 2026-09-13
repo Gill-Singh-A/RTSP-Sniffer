@@ -10,10 +10,14 @@ pcap/pcapng file (Phase 1) or a live interface (Phase 2).
   two real captures: a single-session H.264 stream and an 85-session
   capture mixing H.264 and H.265 across dozens of concurrent cameras. See
   [Validation results](#validation-results).
-- **Phase 2 (live interface sniffing) — implemented, unit-tested, not yet
-  validated against a live capture.** Starting a real capture needs
-  root/`CAP_NET_RAW` on the box doing the sniffing; that hasn't been
-  exercised end-to-end yet.
+- **Phase 2 (live interface sniffing) — done and validated.** Tested
+  against a real, live RTSP camera (Dahua-protocol, `RTP/AVP/TCP`) over a
+  routed VPN link: detected the session as it started, decoded H.264
+  video in real time despite real packet loss on the link (mid-stream
+  sequence gaps, handled without crashing), correctly skipped an
+  unsupported ONVIF metadata sub-stream instead of failing the whole
+  session, and correctly finalized (closed/released) the output file both
+  on idle-timeout and would do so on `TEARDOWN`.
 
 ## Architecture
 
@@ -187,6 +191,22 @@ transport, negotiated over TCP port 554. Every one of the 86 total output
 `.mp4` files was verified with `ffprobe` to have a non-zero, correct
 frame count and no corruption.
 
+Phase 2 was validated against a live camera reachable over a VPN link
+(`vpn0`), sniffed with `sudo python cli_live.py -i vpn0 --headless`
+while `ffmpeg` pulled the same stream to generate traffic. Two runs, both
+producing a valid, `ffprobe`-clean H.264 `.mp4` (2304x1296):
+
+| Run | Frames | How it ended |
+|---|---|---|
+| 1 | 41 | process exit (final `flush_all()`) |
+| 2 | 104 | idle-timeout reap (mid-run finalize, tool kept running) |
+
+The second run is what caught a real bug: idle-reaping a session used to
+flush the decoder but never close the video writer, leaving the `.mp4`
+without its `moov` atom (unplayable) until the whole process exited.
+Fixed by finalizing (flush + close output) per-track on both `TEARDOWN`
+and idle-reap, not just at shutdown - see `Demuxer._finalize_connection`.
+
 ## Non-goals (per project scope)
 
 - Decrypting SRTP/encrypted RTSP — cleartext RTP only.
@@ -197,15 +217,20 @@ frame count and no corruption.
 
 - MJPEG depacketizer (RFC 2435, default quant/huffman tables) is
   implemented and unit-tested against synthetic packets, but neither
-  fixture capture uses MJPEG, so it hasn't been exercised against a real
-  stream.
+  fixture capture nor the live camera used MJPEG, so it hasn't been
+  exercised against a real stream.
 - UDP transport (`RTP/AVP` client/server ports rather than interleaved)
   is implemented in `Demuxer`/`session_tracker.py` but likewise untested
-  against a real capture — both fixtures negotiate `RTP/AVP/TCP`.
-- Live capture (Phase 2) needs a real interface with actual RTSP traffic
-  (or a replayed capture + root/`CAP_NET_RAW`) to validate end-to-end;
-  not yet done.
+  against a real capture — every RTSP source seen so far negotiates
+  `RTP/AVP/TCP`.
 - Reorder/drop handling on live capture currently means "sequence gaps
-  drop the in-flight FU-A/FU fragment and log a warning" — there's no
-  reordering buffer yet, so a reordered (not just dropped) packet on a
-  lossy live link will still lose that fragment run.
+  drop the in-flight FU-A/FU fragment and log a warning" — confirmed
+  against a real lossy VPN link (no crash, no corrupt frames, just
+  dropped fragment runs logged). There's no reordering buffer yet, so a
+  *reordered* (not just dropped) packet will still lose that fragment run
+  rather than being placed back in order.
+- When a track's SDP has no `a=framerate` (seen on one real camera), the
+  saved `.mp4` falls back to a nominal 25fps container rate since there's
+  no reliable signal for the true rate at sink-creation time - the frames
+  themselves are correct, but playback speed may not match wall-clock for
+  that source.
