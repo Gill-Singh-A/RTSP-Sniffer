@@ -26,9 +26,9 @@ SESSION_IDLE_TIMEOUT_SECONDS = 90.0
 
 
 class LiveCapture:
-    def __init__(self, iface: str, on_frame, on_track_started=None, queue_size: int = 2048) -> None:
+    def __init__(self, iface: str, on_frame, on_track_started=None, on_track_ended=None, queue_size: int = 2048) -> None:
         self.iface = iface
-        self.demux = Demuxer(on_frame=on_frame, on_track_started=on_track_started)
+        self.demux = Demuxer(on_frame=on_frame, on_track_started=on_track_started, on_track_ended=on_track_ended)
         self.bridge = TcpRtspBridge(self.demux)
         self._last_seen: dict[str, float] = {}
         self._queue: "queue.Queue" = queue.Queue(maxsize=queue_size)

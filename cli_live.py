@@ -53,7 +53,13 @@ def main() -> int:
         frame_counts[track.label] = frame_counts.get(track.label, 0) + 1
         viewer.on_frame(track, frame)
 
-    capture = LiveCapture(args.iface, on_frame=on_frame, on_track_started=on_track_started)
+    def on_track_ended(track):
+        logger.info("session ended: %s (%d frames)", track.label, frame_counts.get(track.label, 0))
+        viewer.close_track(track)
+
+    capture = LiveCapture(
+        args.iface, on_frame=on_frame, on_track_started=on_track_started, on_track_ended=on_track_ended,
+    )
 
     stopping = False
 

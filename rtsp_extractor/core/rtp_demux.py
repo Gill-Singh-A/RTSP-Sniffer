@@ -28,9 +28,10 @@ class ConnectionState:
 
 
 class Demuxer:
-    def __init__(self, on_frame, on_track_started=None) -> None:
+    def __init__(self, on_frame, on_track_started=None, on_track_ended=None) -> None:
         self.on_frame = on_frame  # callback(track, frame_ndarray)
         self.on_track_started = on_track_started  # callback(track)
+        self.on_track_ended = on_track_ended  # callback(track) - flushed & finalized (TEARDOWN or idle reap)
         self._connections: dict[object, ConnectionState] = {}
         self._udp_port_map: dict[tuple, tuple] = {}  # (client_ip, port) -> (conn_id, track_id)
 
@@ -51,9 +52,11 @@ class Demuxer:
 
         for event in parser.feed(payload):
             if isinstance(event, RtspMessage):
-                state.tracker.feed_message(event, to_server=to_server)
+                torn_down = state.tracker.feed_message(event, to_server=to_server)
                 for track in state.tracker.drain_new_tracks():
                     self._start_pipeline(state, track, client_ip)
+                if torn_down:
+                    self._finalize_connection(state)
             elif isinstance(event, InterleavedFrame):
                 self._handle_interleaved(state, event)
 
@@ -106,10 +109,20 @@ class Demuxer:
         if self.on_track_started:
             self.on_track_started(track)
 
+    def _finalize_connection(self, state: ConnectionState) -> None:
+        """Flush every track's pipeline (decoder + output sink) so its file
+        is left in a valid, playable state - used on TEARDOWN and on idle
+        reap, the two ways a live session ends without the whole process
+        exiting."""
+        for pipeline in state.pipelines.values():
+            pipeline.flush()
+            if self.on_track_ended:
+                self.on_track_ended(pipeline.track)
+        state.pipelines = {}
+
     def flush_all(self) -> None:
         for state in self._connections.values():
-            for pipeline in state.pipelines.values():
-                pipeline.flush()
+            self._finalize_connection(state)
 
     def flush_and_forget(self, conn_id) -> None:
         """Flush a single connection's pipelines and drop its state - for
@@ -117,8 +130,7 @@ class Demuxer:
         state = self._connections.pop(conn_id, None)
         if state is None:
             return
-        for pipeline in state.pipelines.values():
-            pipeline.flush()
+        self._finalize_connection(state)
 
     def all_tracks(self):
         for state in self._connections.values():

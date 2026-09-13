@@ -104,13 +104,15 @@ class SessionTracker:
         if cseq is not None and message.method:
             self._pending[cseq] = _PendingRequest(method=message.method, url=message.url or "")
 
-    def on_response(self, message: RtspMessage) -> None:
+    def on_response(self, message: RtspMessage) -> bool:
+        """Returns True exactly when this response just completed a TEARDOWN -
+        the caller's cue to finalize (flush + close) this connection's tracks."""
         cseq = message.cseq
         if cseq is None or cseq not in self._pending:
-            return
+            return False
         pending = self._pending.pop(cseq)
         if message.status_code != 200:
-            return
+            return False
 
         if pending.method == "DESCRIBE" and message.content_type and "sdp" in message.content_type.lower():
             self.sdp = parse_sdp(message.body.decode("utf-8", errors="replace"))
@@ -122,6 +124,9 @@ class SessionTracker:
             self.torn_down = True
             for track in self.tracks.values():
                 track.active = False
+            return True
+
+        return False
 
     def _handle_setup_ok(self, url: str, message: RtspMessage) -> None:
         transport_header = message.headers.get("transport", "")
@@ -175,11 +180,13 @@ class SessionTracker:
         track.active = True
         self.new_tracks.append(track)
 
-    def feed_message(self, message: RtspMessage, to_server: bool) -> None:
+    def feed_message(self, message: RtspMessage, to_server: bool) -> bool:
+        """Returns True exactly when this message just completed a TEARDOWN."""
         if to_server and message.is_request:
             self.on_request(message)
         elif (not to_server) and (not message.is_request):
-            self.on_response(message)
+            return self.on_response(message)
+        return False
 
     def drain_new_tracks(self) -> list:
         tracks, self.new_tracks = self.new_tracks, []

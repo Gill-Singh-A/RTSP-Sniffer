@@ -78,6 +78,15 @@ class ViewerManager:
             self._sinks[track.label] = sink
         sink.write(frame)
 
+    def close_track(self, track) -> None:
+        """Finalize and drop a single track's sink (releases its
+        VideoWriter so the file gets a valid trailer) - for live capture,
+        where a session can end (TEARDOWN or idle reap) long before the
+        whole process exits."""
+        sink = self._sinks.pop(track.label, None)
+        if sink is not None:
+            sink.close()
+
     def close(self) -> None:
         for sink in self._sinks.values():
             sink.close()
